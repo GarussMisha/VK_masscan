@@ -17,3 +17,11 @@
 - API telegram
 
 
+## Установка компонентов проекта
+
+``` bash
+sudo apt update
+sudo apt install masscan
+
+pip install -r requirements.txt
+```
