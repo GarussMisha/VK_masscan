@@ -5,7 +5,7 @@ Docstring для app.masscan_scaner
 1. Config - для загрузки и управления конфигурацией сканирования. +
 2. ScanHistory - для ведения истории сканирований.
 3. MasscanScanner - для выполнения сканирования с помощью masscan и обработки результатов.
-4. BannerGrabber - для захвата баннеров с открытых портов.
+4. BannerGrabber - для захвата баннеров с открытых портов. +
 5. TelegramNotifier - для отправки уведомлений через Telegram. +
 6. PortScannerOrchestrator - для координации всех компонентов и управления процессом сканирования.
 """
@@ -19,6 +19,9 @@ from telegram import Bot
 import asyncio
 from datetime import datetime
 import nmap
+import subprocess
+from pathlib import Path
+import os
 
 
 # === Logging Setup === 
@@ -111,8 +114,8 @@ class TelegramNotifier:
             bot = await self._get_bot()
             await bot.send_message(
                 chat_id=self.chat_id,
-                text=message
-                parse_mode='HTML'
+                text=message,
+                parse_mode='HTML',
             )
             logging.info("Уведомление отправлено в Telegram.")
             return True
@@ -195,3 +198,106 @@ class BannerGrabber:
         except Exception as e:
             logging.error(f"Ошибка при получении информации о порту {port} на {ip}: {e}")
             return f"Ошибка при сканировании порта {port}"
+        
+
+# === Masscan Scanner Class ===
+class MasscanScanner:
+    """Сканирование портов с использованием masscan и обработка результатов."""
+    
+    def __init__(self, rate: int = 1000, timeout: int = 300):
+        self.rate = rate
+        self.timeout = timeout
+        self._check_masscan_installed()
+        
+    def _check_masscan_installed(self):
+        """Проверка установки masscan в системе."""
+        try:
+            subprocess.run(
+                ['masscan', '--version'], 
+                check=True,
+                capture_output=True,
+                timeout=10
+            )
+            logging.info("Masscan установлен и доступен.")  
+            
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            logging.error("Masscan не установлен или недоступен.")
+            sys.exit(1)
+    
+    def scan(self, target: str, ports: str) -> List[Dict]:
+        """Выполнение сканирования с помощью masscan и возврат результатов."""
+        
+        logging.info(f"Запуск masscan для цели: {target} на портах: {ports} с rate: {self.rate}")
+        
+        # Временный файл для вывода результатов
+        output_file = f"app/scan_history/masscan_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        # Построение команды masscan
+        cmd = [
+            'sudo', # Запуск от суперпользователя для доступа к низкоуровневым сетевым функциям
+            'masscan',
+            target,
+            '-p', ports,
+            '--rate', str(self.rate),
+            '--open-only',
+            '--wait', str(self.timeout),
+            '--output-format', 'json',
+            '--output-filename', output_file
+        ]
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout
+            )
+           
+            if result.returncode != 0:
+                logging.error(f"Ошибка при выполнении masscan: {result.stderr}")
+                return []
+            
+            if not Path(output_file).exists():
+                logging.warning("Файл с результатами сканирования не был создан.")
+                return []
+            
+            with open(output_file, 'r', encoding='utf-8') as f:
+                scan_results_lines = f.readlines()
+                
+            results = []
+            
+            for line in scan_results_lines:
+                line = line.strip()
+                if not line or line == ',':
+                    continue
+                if line.endswith(','):
+                    line = line[:-1]
+                    
+                try:
+                    data = json.loads(line)
+                    if 'ip' in data and 'ports' in data:
+                        for port_info in data['ports']:
+                            results.append({
+                                'ip': data['ip'],
+                                'port': port_info['port'],
+                                'protocol': port_info.get('proto', 'tcp'),
+                                'status': port_info.get('status', 'open')
+                            })
+                except json.JSONDecodeError as e:
+                    logging.error(f"Ошибка парсинга строки JSON: {e}")
+                    continue
+                
+            try:
+                os.remove(output_file)
+            except OSError as e:
+                logging.warning(f"Не удалось удалить временный файл: {e}")
+                
+            logging.info(f"Masscan завершил сканирование. Найдено {len(results)} открытых портов.")
+            return results
+        
+        except subprocess.TimeoutExpired:
+            logging.error(f"Время ожидания истекло при выполнении masscan {self.timeout} секунд.")
+            return []
+        except Exception as e:
+            logging.error(f"Неизвестная ошибка при выполнении masscan: {e}")
+            return []
