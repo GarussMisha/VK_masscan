@@ -2,12 +2,14 @@
 Docstring для app.masscan_scaner
 Основной модуль для сканирования портов с использованием masscan.
 В нем реализовано классами:
-1. Config - для загрузки и управления конфигурацией сканирования. +
-2. ScanHistory - для ведения истории сканирований.
-3. MasscanScanner - для выполнения сканирования с помощью masscan и обработки результатов. +
+1. Logging - для настройки логирования. +
+2. Config - для загрузки и управления конфигурацией сканирования. +
+3. TelegramNotifier - для отправки уведомлений через Telegram.
 4. BannerGrabber - для захвата баннеров с открытых портов. +
-5. TelegramNotifier - для отправки уведомлений через Telegram. +
-6. PortScannerOrchestrator - для координации всех компонентов и управления процессом сканирования.
+5. MasscanScanner - для выполнения сканирования с помощью masscan и обработки результатов. +
+6. ScanHistory - для ведения истории сканирований. +
+7. PortScannerOrchestrator - для координации всех компонентов и управления процессом сканирования. +
+8. main - точка входа для запуска сканирования. +
 """
 
 # Imports
@@ -24,7 +26,7 @@ from pathlib import Path
 import os
 
 
-# === Logging Setup === 
+# === 1. Logging Setup === 
 def setup_logging():
     """Настройка логирования для приложения в файл и консоль."""
     logging.basicConfig(
@@ -37,7 +39,7 @@ def setup_logging():
     )
 
 
-# === Config Class === 
+# === 2. Config Class === 
 class Config:
     """
     Класс для загрузки и управления конфигурацией сканирования.
@@ -71,10 +73,17 @@ class Config:
             
         if not self.data["scan_target"]:
             raise ValueError("Список scan_targets не может быть пустым.")
+        
+        if not isinstance(self.data["scan_target"], list):
+            raise ValueError("scan_target должен быть списком.")
     
     @property
-    def scan_target(self) -> str:
-        return self.data["scan_target"]["target"]
+    def scan_targets(self) -> List[Dict[str, Any]]:
+        return self.data["scan_target"]
+    
+    @property
+    def scan_target_name(self) -> str:
+        return self.data["scan_target"].get("name", "Unknown")
     
     @property
     def scan_ports(self) -> str:
@@ -85,15 +94,27 @@ class Config:
         return self.data["masscan_config"].get("rate", 1000)
     
     @property
+    def masscan_timeout(self) -> int:
+        return self.data["masscan_config"].get("timeout", 30)
+        
+    @property
     def telegram_token(self) -> str:
         return self.data["telegram"].get("bot_token", "")
     
     @property
     def telegram_chat_id(self) -> str:
         return self.data["telegram"].get("chat_id", "")
+    
+    @property
+    def schedule_enabled(self) -> bool:
+        return self.data["schedule"].get("enabled", False)
+    
+    @property
+    def schedule_interval_hours(self) -> int:
+        return self.data["schedule"].get("interval_hours", 24)
 
 
-# === Telegram Notifier Class ===
+# === 3. Telegram Notifier Class ===
 class TelegramNotifier:
     """Отправка уведомлений через Telegram в бота."""
     
@@ -148,9 +169,20 @@ class TelegramNotifier:
         message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         
         await self.send_message(message)
+        
+    async def notify_scan_start(self, target_name: str, target: str, ports: str):
+        """Отправка уведомления о начале сканирования."""
+        
+        message = f"🚀 <b>Начало сканирования!</b>\n\n"
+        message += f"<b>Цель:</b> {target_name}\n"
+        message += f"<b>Адрес:</b> {target}\n"
+        message += f"<b>Порты:</b> {ports}\n"
+        message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        await self.send_message(message)
 
 
-# === Banner Grabber Class ===
+# === 4. Banner Grabber Class ===
 class BannerGrabber:
     """Получение баннеров с открытых портов при помощи nmap."""
     
@@ -200,7 +232,7 @@ class BannerGrabber:
             return f"Ошибка при сканировании порта {port}"
         
 
-# === Masscan Scanner Class ===
+# === 5. Masscan Scanner Class ===
 class MasscanScanner:
     """Сканирование портов с использованием masscan и обработка результатов."""
     
@@ -212,16 +244,18 @@ class MasscanScanner:
     def _check_masscan_installed(self):
         """Проверка установки masscan в системе."""
         try:
-            subprocess.run(
-                ['masscan', '--version'], 
+            result = subprocess.run(
+                ['sudo', 'which', 'masscan'], 
                 check=True,
                 capture_output=True,
-                timeout=10
+                timeout=100
             )
-            logging.info("Masscan установлен и доступен.")  
             
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-            logging.error("Masscan не установлен или недоступен.")
+            masscan_path = result.stdout.decode().strip()
+            logging.info(f"Masscan установлен и доступен по пути {masscan_path}.")  
+            
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logging.error(f"Ошибка при проверке наличия masscan: {e}")
             sys.exit(1)
     
     def scan(self, target: str, ports: str) -> List[Dict]:
@@ -234,7 +268,7 @@ class MasscanScanner:
         
         # Построение команды masscan
         cmd = [
-            'sudo', # Запуск от суперпользователя для доступа к низкоуровневым сетевым функциям
+            #'sudo', # Запуск от суперпользователя для доступа к низкоуровневым сетевым функциям
             'masscan',
             target,
             '-p', ports,
@@ -246,14 +280,18 @@ class MasscanScanner:
         ]
         
         try:
+            logging.info(f"Команда: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout
             )
-           
-            if result.returncode != 0:
+            logging.info(f"Возврат кода masscan: {result.returncode}")
+            logging.info(f"Stdout: {result.stdout[:200]}...")
+            logging.info(f"Stderr: {result.stderr[:200]}...")
+
+            if result.returncode not in [0, 1]:  # 0 - успешное выполнение, 1 - некоторые хосты недоступны
                 logging.error(f"Ошибка при выполнении masscan: {result.stderr}")
                 return []
             
@@ -288,7 +326,8 @@ class MasscanScanner:
                     continue
                 
             try:
-                os.remove(output_file)
+                pass
+                #os.remove(output_file)
             except OSError as e:
                 logging.warning(f"Не удалось удалить временный файл: {e}")
                 
@@ -303,7 +342,7 @@ class MasscanScanner:
             return []
         
 
-# === Scan History Class ===
+# === 6. Scan History Class ===
 class ScanHistory:
     """Управление историей сканирований и хранение данных о найденных портах."""
     
@@ -356,4 +395,209 @@ class ScanHistory:
         current_p = set(current_ports)
         new_ports = current_p - previous_p
         return sorted(list(new_ports))
+
+
+# === 7. Port Scanner Orchestrator Class ===
+class PortScannerOrchestrator:
+    """Координация всех компонентов для выполнения сканирования портов."""
     
+    def __init__(self, config_path: str = "config.json"):
+        self.config = Config(config_path)
+        self.history = ScanHistory()
+        self.masscan_scanner = MasscanScanner(
+            rate=self.config.masscan_rate,
+            timeout=self.config.masscan_timeout
+            )
+        self.notifier = TelegramNotifier(
+            bot_token=self.config.telegram_token,
+            chat_id=self.config.telegram_chat_id
+            )
+        self.banner_grabber = BannerGrabber()
+
+    async def process_scan_result(self, results: List[Dict], target_name: str):
+        """
+        Обработка результатов сканирования:
+        - Группировка по IP
+        - Получение баннеров для каждого порта
+        - Сравнение с историей
+        - Отправка уведомлений о новых портах
+        """
+        if not results:
+            logging.info("Нет открытых портов для обработки.")
+            return
+        
+        # Группировка результатов по IP
+        ports_by_ip: Dict[str, List[int]] = {}
+        
+        for result in results:
+            ip = result['ip']
+            port = result['port']
+            
+            if ip not in ports_by_ip:
+                ports_by_ip[ip] = []
+            ports_by_ip[ip].append(port)
+            
+        logging.info(f"Обнаружено {len(ports_by_ip)} уникальных IP адресов с открытыми портами.")
+        
+        # Обработка каждого IP
+        for ip, ports in ports_by_ip.items():
+            logging.info(f"\n{'='*60}")
+            logging.info(f"Обработка {target_name} c IP: {ip} с портами: {ports}")
+            logging.info(f"{'='*60}\n")
+            
+            # Получение баннеров для каждого порта
+            services = {}
+            for port in ports:
+                logging.info(f"Получение баннера для {ip}:{port}...")
+                service_info = self.banner_grabber.identify_open_ports(ip, port)
+                services[port] = service_info
+                logging.info(f"-> {ip}:{port}/tcp: {service_info}")
+            
+            # Определение новых портов
+            new_ports = self.history.find_new_ports(ip, ports)
+            
+            if new_ports:
+                logging.warning(f"Обноружены НОВЫЕ открытые порты на {ip}: {new_ports}")
+                await self.notifier.notify_new_ports(ip, new_ports, services)
+            else:
+                logging.info(f"Новых открытых портов на {ip} не обнаружено.")
+                
+            # Обновление истории сканирования
+            self.history.update_ports(ip, ports, services)
+            logging.info(f"История сканирования для {ip} обновлена.")
+            
+    async def run_scan(self, target_config: Dict[str, str]):
+        """Запуск полного цикла сканирования."""
+        
+        target_name = target_config.get("name", "Unknown")
+        target = target_config["target"]
+        ports = target_config["ports"]
+        
+        logging.info(f"{'='*60}")
+        logging.info(f"Запуск сканирования")
+        logging.info(f"Цель: {target_name}")
+        logging.info(f"Адрес: {target}")
+        logging.info(f"Порты: {ports}")
+        logging.info(f"Rate: {self.config.masscan_rate} пакетов/сек")
+        logging.info(f"{'='*60}\n")
+        
+        await self.notifier.notify_scan_start(target_name, target, ports)
+        
+        # Выполнение сканирования masscan
+        scan_results = self.masscan_scanner.scan(target, ports)
+        
+        if not scan_results:
+            logging.info("Сканирование завершено. Открытых портов не обнаружено.")
+            await self.notifier.notify_scan_complete(target_name, 0)
+            return
+        
+        # Обработка результатов сканирования
+        await self.process_scan_result(scan_results, target_name)
+        
+        # Уведомление об окончании сканирования
+        await self.notifier.notify_scan_complete(target_name, len(scan_results))
+        
+        logging.info(f"{'='*60}")
+        logging.info("Сканирование завершено.")
+        logging.info(f"Обнаружено {len(scan_results)} открытых портов на {target_name}")
+        logging.info(f"{'='*60}\n")
+
+    async def run_all_scans(self):
+        """Запуск сканирования для всех целей из конфигурации."""
+        
+        targets = self.config.scan_targets
+        total_targets = len(targets)
+        
+        logging.info(f"{'='*60}")
+        logging.info(f"Начало сканирования всех целей. Всего целей: {total_targets}")
+        logging.info(f"{'='*60}\n")
+        
+        for idx, target_config in enumerate(targets, 1):
+            try:
+                logging.info(f">>> Сканирование цели {idx} из {total_targets} <<<")
+                await self.run_scan(target_config)
+            except Exception as e:
+                target_name = target_config.get("name", "Unknown")
+                logging.error(f"Ошибка при сканировании цели {target_name}: {e}", exc_info=True)
+                continue
+        
+        logging.info(f"{'='*60}")
+        logging.info("Сканирование всех целей завершено.")
+        logging.info(f"Просканировано целей: {total_targets}")
+        logging.info(f"{'='*60}\n")
+            
+    async def run_scheduled_scans(self):
+        """Запуск сканирования по расписанию."""
+        
+        if not self.config.schedule_enabled:
+            logging.info("Планировщик сканирования отключен в конфиге.")
+            logging.info("Выполняется одноразовое сканирование всех целей.")
+            await self.run_all_scans()
+            return
+        
+        interval = self.config.schedule_interval_hours
+        interval_seconds = interval * 3600
+        
+        logging.info(f"Режим рассписания включен.")
+        logging.info(f"Сканирование будет выполняться каждые {interval} часов.")
+        logging.info("Для остановки сканирования нажмите Ctrl+C.")
+        
+        scan_count = 0
+        
+        try:
+            while True:
+                scan_count += 1
+                logging.info(f"\n{'#'*60}")
+                logging.info(f"Цикл сканирования #{scan_count} начат.")
+                logging.info(f"{'#'*60}\n")
+                
+                await self.run_all_scans()
+                
+                next_scan_time = datetime.now().timestamp() + interval_seconds
+                next_scan_datetime = datetime.fromtimestamp(next_scan_time).strftime('%Y-%m-%d %H:%M:%S')
+                logging.info(f"Следующее сканирование запланировано на: {next_scan_datetime}")
+                logging.info(f"Ожидание {interval} часов до следующего сканирования...\n")
+                
+                await asyncio.sleep(interval_seconds)
+                
+        except KeyboardInterrupt:
+            logging.info("\n\n Сканирование по расписанию остановлено пользователем.")
+            logging.info("Выполнено циклов сканирования: {scan_count}")
+            logging.info("Завершение работы.")
+            
+            
+# === 8. Main Entry Point ===
+async def main():
+    """Точка входа для запуска сканирования портов."""
+    
+    # Настройка логирования
+    setup_logging()
+    
+    logging.info("="*60)
+    logging.info("  PORT SCANNER - Автоматизированное сканирование портов")
+    logging.info("  Использует: Masscan + Nmap + Telegram")
+    logging.info("="*60 + "\n")
+    
+    try:
+        #Инициализация оркестратора сканирования
+        orchestrator = PortScannerOrchestrator(config_path="app/config.json")
+        
+        # Выбрать запускаемый режим выполнения
+        # Запуск сканирования (автоматически определяет режим из конфига)
+        # Если schedule.enabled = false -> однократное сканирование всех целей
+        # Если schedule.enabled = true -> периодическое сканирование по расписанию
+        await orchestrator.run_scheduled_scans()
+        
+    except KeyboardInterrupt:
+        logging.info(">>> Сканирование остановлено пользователем.")
+    except Exception as e:
+        logging.error(f"Неизвестная ошибка в основном цикле: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        logging.info("="*60)
+        logging.info(">>> Программа завершена ")
+
+    
+if __name__ == "__main__":
+    # Запуск основного цикла
+    asyncio.run(main())
