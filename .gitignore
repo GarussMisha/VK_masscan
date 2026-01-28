@@ -1,3 +1,7 @@
 *.env
 venv/
 docs/
+*output.json*
+*.sh
+**README.md**
+*config.json*
