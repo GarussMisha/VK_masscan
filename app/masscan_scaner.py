@@ -188,7 +188,7 @@ class BannerGrabber:
     
     def __init__(self, nmap_args: List[str] = None):
         self.nm = nmap.PortScanner()
-        self.nmap_args = nmap_args or ['-sV', '-T4', '--open']
+        self.nmap_args = nmap_args or ['-sV', '--version-intensity=2', '-T4', '--open', '-n', '-Pn']
         
     def identify_open_ports(self, ip: str, port: int) -> str:
         """Получение баннеров с открытых портов."""
@@ -199,7 +199,7 @@ class BannerGrabber:
                 ports=str(port),
                 arguments=' '.join(self.nmap_args)
             )
-            
+
             # Извлечение данных о сервисах
             host_data = scan_nmap_result.get('scan', {}).get(ip, {})
             if not host_data:
@@ -207,7 +207,7 @@ class BannerGrabber:
             
             tcp_info = host_data.get('tcp', {})
 
-            port_info = tcp_info.get('port', {})
+            port_info = tcp_info.get(port, {})
             if not port_info:
                 return f"Порт {port} не открыт или ошибка"
             
@@ -236,7 +236,7 @@ class BannerGrabber:
 class MasscanScanner:
     """Сканирование портов с использованием masscan и обработка результатов."""
     
-    def __init__(self, rate: int = 1000, timeout: int = 300):
+    def __init__(self, rate: int = 1000, timeout: int = 5):
         self.rate = rate
         self.timeout = timeout
         self._check_masscan_installed()
@@ -248,7 +248,7 @@ class MasscanScanner:
                 ['sudo', 'which', 'masscan'], 
                 check=True,
                 capture_output=True,
-                timeout=100
+                timeout=self.timeout
             )
             
             masscan_path = result.stdout.decode().strip()
@@ -274,7 +274,7 @@ class MasscanScanner:
             '-p', ports,
             '--rate', str(self.rate),
             '--open-only',
-            '--wait', str(self.timeout),
+            '--wait', '0',
             '--output-format', 'json',
             '--output-filename', output_file
         ]
@@ -284,8 +284,7 @@ class MasscanScanner:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
-                timeout=self.timeout
+                text=True
             )
             logging.info(f"Возврат кода masscan: {result.returncode}")
             logging.info(f"Stdout: {result.stdout[:200]}...")
@@ -333,7 +332,7 @@ class MasscanScanner:
                 
             logging.info(f"Masscan завершил сканирование. Найдено {len(results)} открытых портов.")
             return results
-        
+
         except subprocess.TimeoutExpired:
             logging.error(f"Время ожидания истекло при выполнении masscan {self.timeout} секунд.")
             return []
@@ -441,14 +440,14 @@ class PortScannerOrchestrator:
         
         # Обработка каждого IP
         for ip, ports in ports_by_ip.items():
-            logging.info(f"\n{'='*60}")
+            logging.info(f"{'='*60}")
             logging.info(f"Обработка {target_name} c IP: {ip} с портами: {ports}")
-            logging.info(f"{'='*60}\n")
+            logging.info(f"{'='*60}")
             
             # Получение баннеров для каждого порта
             services = {}
             for port in ports:
-                logging.info(f"Получение баннера для {ip}:{port}...")
+                logging.info(f"Получение баннера для {ip}:{port}")
                 service_info = self.banner_grabber.identify_open_ports(ip, port)
                 services[port] = service_info
                 logging.info(f"-> {ip}:{port}/tcp: {service_info}")
@@ -479,7 +478,7 @@ class PortScannerOrchestrator:
         logging.info(f"Адрес: {target}")
         logging.info(f"Порты: {ports}")
         logging.info(f"Rate: {self.config.masscan_rate} пакетов/сек")
-        logging.info(f"{'='*60}\n")
+        logging.info(f"{'='*60}")
         
         await self.notifier.notify_scan_start(target_name, target, ports)
         
@@ -595,7 +594,7 @@ async def main():
         sys.exit(1)
     finally:
         logging.info("="*60)
-        logging.info(">>> Программа завершена ")
+        logging.info(">>> Программа завершена " + "\n")
 
     
 if __name__ == "__main__":

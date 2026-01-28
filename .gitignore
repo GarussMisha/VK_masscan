@@ -5,3 +5,5 @@ docs/
 *.sh
 **README.md**
 *config.json*
+**masscan**
+**scan**
