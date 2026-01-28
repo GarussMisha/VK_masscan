@@ -4,7 +4,7 @@ Docstring для app.masscan_scaner
 В нем реализовано классами:
 1. Config - для загрузки и управления конфигурацией сканирования. +
 2. ScanHistory - для ведения истории сканирований.
-3. MasscanScanner - для выполнения сканирования с помощью masscan и обработки результатов.
+3. MasscanScanner - для выполнения сканирования с помощью masscan и обработки результатов. +
 4. BannerGrabber - для захвата баннеров с открытых портов. +
 5. TelegramNotifier - для отправки уведомлений через Telegram. +
 6. PortScannerOrchestrator - для координации всех компонентов и управления процессом сканирования.
@@ -301,3 +301,59 @@ class MasscanScanner:
         except Exception as e:
             logging.error(f"Неизвестная ошибка при выполнении masscan: {e}")
             return []
+        
+
+# === Scan History Class ===
+class ScanHistory:
+    """Управление историей сканирований и хранение данных о найденных портах."""
+    
+    def __init__(self, history_file: str = "app/scan_history/scan_history.json"):
+        self.history_file = history_file
+        self.data = self._load_history()
+        
+    def _load_history(self) -> dict:
+        """Загрузка истории сканирований из JSON файла."""
+        if not Path(self.history_file).exists():
+            return {}
+        
+        try:
+            with open(self.history_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logging.error(f"Ошибка парсинга JSON в файле истории создаём новую историю: {e}")
+            return {}
+        
+    def _save_history(self):
+        """Сохранение истории сканирований в JSON файл."""
+        
+        try:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logging.error(f"Ошибка при сохранении истории сканирований: {e}")
+        
+    def get_previous_ports(self, ip: str) -> set:
+        """Получение множества ранее найденных портов для данного IP."""
+        return set(self.data.get(ip, {}).get("ports", []))
+    
+    def update_ports(self, ip: str, ports: List[int], services: dict):
+        """Обновление информации о портах для указанного IP."""
+        if ip not in self.data:
+            self.data[ip] = {
+                "first_scanned": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "ports": [],
+                "services": {}
+            }
+            
+        self.data[ip]["ports"] = sorted(list(set(ports)))
+        self.data[ip]["services"].update(services)
+        self.data[ip]["last_scanned"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self._save_history()
+        
+    def find_new_ports(self, ip: str, current_ports: List[int]) -> List[int]:
+        """Определение новых портов, которых не было в предыдущих сканированиях."""
+        previous_p = self.get_previous_ports(ip)
+        current_p = set(current_ports)
+        new_ports = current_p - previous_p
+        return sorted(list(new_ports))
+    
