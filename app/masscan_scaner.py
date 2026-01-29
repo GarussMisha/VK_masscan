@@ -139,16 +139,40 @@ class TelegramNotifier:
     async def send_message(self, message: str) -> bool:
         """Отправка сообщения в Telegram чат асинхронно."""
         try:
+            logging.debug(f"Попытка отправки сообщения в Telegram... (длина: {len(message)} символов)")
             bot = await self._get_bot()
             await bot.send_message(
                 chat_id=self._chat_id,
                 text=message,
                 parse_mode='HTML',
             )
-            logging.info("Уведомление отправлено в Telegram.")
+            logging.info("Сообщение успешно отправлено в Telegram.")
             return True
+        except asyncio.CancelledError:
+            # Если задача была отменена, пытаемся отправить синхронно
+            logging.warning("Асинхронная операция была прервана, попытка синхронной отправки...")
+            try:
+                import requests
+                token = self._bot_token
+                chat_id = self._chat_id
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                payload = {
+                    "chat_id": chat_id,
+                    "text": message,
+                    "parse_mode": "HTML"
+                }
+                response = requests.post(url, json=payload, timeout=5)
+                if response.status_code == 200:
+                    logging.info("Сообщение отправлено синхронно (запасной вариант).")
+                    return True
+                else:
+                    logging.error(f"Ошибка синхронной отправки: HTTP {response.status_code}")
+                    return False
+            except Exception as sync_error:
+                logging.error(f"Синхронная отправка также не удалась: {sync_error}")
+                return False
         except Exception as e:
-            logging.error(f"Не удалось отправить уведомление в Telegram: {e}")
+            logging.error(f"Ошибка отправки сообщения в Telegram: {type(e).__name__}: {e}")
             return False
         
     async def notify_new_ports(self, ip: str, new_ports: list[int], services: dict):
@@ -156,7 +180,7 @@ class TelegramNotifier:
         if not new_ports:
             return
         
-        message = f"🚨 <b>Обнаружены новые открытые порты!</b>\n\n"
+        message = f"<b>Обнаружены новые открытые порты!</b>\n\n"
         message += f"<b>IP:</b> {ip}\n"
         message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         message += f"<b>Новые порты ({len(new_ports)}):</b>\n"
@@ -172,7 +196,7 @@ class TelegramNotifier:
         if not changed_ports:
             return
         
-        message = f"⚠️ <b>Изменение сервисов на портах!</b>\n\n"
+        message = f"<b>Изменение сервисов на портах!</b>\n\n"
         message += f"<b>IP:</b> {ip}\n"
         message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         message += f"<b>Измененные порты ({len(changed_ports)}):</b>\n"
@@ -187,15 +211,16 @@ class TelegramNotifier:
     async def notify_scan_results_single(self, target_name: str, target: str, ports_info: dict):
         """Отправка полной информации о результатах разового сканирования."""
         if not ports_info:
-            message = f"✅ <b>Сканирование завершено!</b>\n\n"
+            message = f"<b>Сканирование завершено!</b>\n\n"
             message += f"<b>Цель:</b> {target_name}\n"
             message += f"<b>Адрес:</b> {target}\n"
             message += f"<b>Результат:</b> Открытых портов не обнаружено\n"
             message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            
             await self.send_message(message)
             return
         
-        message = f"📋 <b>Результаты сканирования:</b>\n\n"
+        message = f"<b>Результаты сканирования:</b>\n\n"
         message += f"<b>Цель:</b> {target_name}\n"
         message += f"<b>Адрес:</b> {target}\n"
         message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
@@ -208,7 +233,7 @@ class TelegramNotifier:
     
     async def notify_schedule_started(self, target_name: str, target: str, ports: str, interval_hours: float):
         """Уведомление о начале планового сканирования."""
-        message = f"🚀 <b>Начало планового сканирования!</b>\n\n"
+        message = f"<b>Начало планового сканирования!</b>\n\n"
         message += f"<b>Цель:</b> {target_name}\n"
         message += f"<b>Адрес:</b> {target}\n"
         message += f"<b>Порты:</b> {ports}\n"
@@ -217,17 +242,19 @@ class TelegramNotifier:
         
         await self.send_message(message)
     
-    async def notify_schedule_stopped(self, scan_count: int, total_cycles: int):
+    async def notify_schedule_stopped(self, scan_count: int, total_cycles: int) -> bool:
         """Уведомление о завершении планового сканирования."""
-        message = f"⏹️ <b>Плановое сканирование остановлено!</b>\n\n"
+        message = f"<b>Плановое сканирование остановлено!</b>\n\n"
         message += f"<b>Завершено циклов:</b> {total_cycles}\n"
-        message += f"<b>Проведено проверок:</b> {scan_count}\n"
+        message += f"<b>Проведено проверок портов:</b> {scan_count}\n"
         message += f"<b>Время остановки:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        return await self.send_message(message)
         
     async def notify_scan_complete(self, target_name: str, total_ports: int):
         """Отправка уведомления об окончании сканирования."""
         
-        message = f"✅ <b>Сканирование завершено!</b>\n\n"
+        message = f"<b>Сканирование завершено!</b>\n\n"
         message += f"<b>Цель:</b> {target_name}\n"
         message += f"<b>Всего открытых портов:</b> {total_ports}\n"
         message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -237,7 +264,7 @@ class TelegramNotifier:
     async def notify_scan_start(self, target_name: str, target: str, ports: str):
         """Отправка уведомления о начале сканирования."""
         
-        message = f"🚀 <b>Начало сканирования!</b>\n\n"
+        message = f"<b>Начало сканирования!</b>\n\n"
         message += f"<b>Цель:</b> {target_name}\n"
         message += f"<b>Адрес:</b> {target}\n"
         message += f"<b>Порты:</b> {ports}\n"
@@ -252,48 +279,72 @@ class BannerGrabber:
     
     def __init__(self, nmap_args: List[str] = None):
         self.nm = nmap.PortScanner()
-        self.nmap_args = nmap_args or ['-sV', '--version-intensity=2', '-T4', '--open', '-n', '-Pn']
+        self.nmap_args = nmap_args or ['-sV', '--version-intensity=1', '-T5', '--open', '-n', '-Pn', '--max-hostgroup=256']
         
-    def identify_open_ports(self, ip: str, port: int) -> str:
-        """Получение баннеров с открытых портов."""
+    def identify_open_ports(self, ip: str, ports: List[int]) -> Dict[int, str]:
+        """Получение баннеров для всех портов сразу."""
+        if not ports:
+            return {}
+        
         try:
-            # Сканируем 
+            ports_str = ','.join(map(str, ports))
+            
+            logging.debug(f"Сканирование {len(ports)} портов на {ip} за одну операцию: {ports_str}")
+            
             scan_nmap_result = self.nm.scan(
                 hosts=ip,
-                ports=str(port),
+                ports=ports_str,
                 arguments=' '.join(self.nmap_args)
             )
 
             # Извлечение данных о сервисах
             host_data = scan_nmap_result.get('scan', {}).get(ip, {})
             if not host_data:
-                return "Нет ответа"
+                logging.warning(f"Нет данных от Nmap для {ip}")
+                return {port: "Нет ответа" for port in ports}
             
             tcp_info = host_data.get('tcp', {})
+            services = {}
+            
+            # Обработка каждого порта из результатов
+            for port in ports:
+                port_info = tcp_info.get(port, {})
+                
+                if not port_info:
+                    services[port] = "Порт не сканирован"
+                    continue
+                
+                # Проверяем статус открытости портов
+                port_status = port_info.get('state', 'unknown')
+                if port_status != 'open':
+                    services[port] = f"Закрыт ({port_status})"
+                    continue
+                
+                service_name = port_info.get('name', 'Unknown')
+                product = port_info.get('product', '').strip()
+                version = port_info.get('version', '').strip()
+                extrainfo = port_info.get('extrainfo', '').strip()
+                
+                # Формируем полное описание сервиса
+                banner_parts = [service_name]
+                if product:
+                    banner_parts.append(product)
+                if version:
+                    banner_parts.append(version)
+                if extrainfo:
+                    banner_parts.append(f"({extrainfo})")
+                
+                services[port] = " ".join(banner_parts).strip()
+            
+            return services
 
-            port_info = tcp_info.get(port, {})
-            if not port_info:
-                return f"Порт {port} не открыт или ошибка"
-            
-            service_name = port_info.get('name', 'Unknown')
-            product = port_info.get('product', '').strip()
-            version = port_info.get('version', '').strip()
-            extrainfo = port_info.get('extrainfo', '').strip()
-            
-            # Формируем полное описание сервиса
-            banner_parts = [service_name]
-            if product:
-                banner_parts.append(product)
-            if version:
-                banner_parts.append(version)
-            if extrainfo:
-                banner_parts.append(f"({extrainfo})")
-            
-            return " ".join(banner_parts).strip()
-
+        except nmap.PortScannerError as e:
+            # Обработка ошибок сканирования Nmap
+            logging.warning(f"Ошибка сканирования Nmap для {ip} (порты: {ports}): {e}")
+            return {port: "Ошибка сканирования (Nmap)" for port in ports}
         except Exception as e:
-            logging.error(f"Ошибка при получении информации о порту {port} на {ip}: {e}")
-            return f"Ошибка при сканировании порта {port}"
+            logging.debug(f"Общая ошибка при получении информации о портах на {ip}: {type(e).__name__}: {e}")
+            return {port: "Ошибка при сканировании" for port in ports}
         
 
 # === 5. Masscan Scanner Class ===
@@ -366,10 +417,12 @@ class MasscanScanner:
             
             for line in scan_results_lines:
                 line = line.strip()
-                if not line or line == ',':
+                if not line or line in [',', '[', ']', '{', '}']:
                     continue
                 if line.endswith(','):
                     line = line[:-1]
+                if len(line) < 10:
+                    continue
                     
                 try:
                     data = json.loads(line)
@@ -382,12 +435,11 @@ class MasscanScanner:
                                 'status': port_info.get('status', 'open')
                             })
                 except json.JSONDecodeError as e:
-                    logging.error(f"Ошибка парсинга строки JSON: {e}")
+                    logging.debug(f"Ошибка парсинга JSON (строка: '{line[:50]}'): {e}")
                     continue
                 
             try:
-                pass
-                #os.remove(output_file)
+                os.remove(output_file)
             except OSError as e:
                 logging.warning(f"Не удалось удалить временный файл: {e}")
                 
@@ -520,16 +572,16 @@ class PortScannerOrchestrator:
         
         # Обработка каждого IP
         for ip, ports in ports_by_ip.items():
-            logging.info(f"{'='*60}")
+            logging.info("="*60)
             logging.info(f"Обработка {target_name} c IP: {ip} с портами: {ports}")
-            logging.info(f"{'='*60}")
+            logging.info("="*60)
+            logging.info(f"Сканирование {len(ports)} портов на {ip}...")
             
-            # Получение баннеров для каждого порта
-            services = {}
-            for port in ports:
-                logging.info(f"Получение баннера для {ip}:{port}")
-                service_info = self.banner_grabber.identify_open_ports(ip, port)
-                services[str(port)] = service_info
+            services_int_keys = self.banner_grabber.identify_open_ports(ip, ports)
+            
+            services = {str(port): service_info for port, service_info in services_int_keys.items()}
+            
+            for port, service_info in services.items():
                 logging.info(f"-> {ip}:{port}/tcp: {service_info}")
             
             # Определение новых портов
@@ -583,13 +635,13 @@ class PortScannerOrchestrator:
         target = target_config["target"]
         ports = target_config["ports"]
         
-        logging.info(f"{'='*60}")
+        logging.info("="*60)
         logging.info(f"Запуск сканирования")
         logging.info(f"Цель: {target_name}")
         logging.info(f"Адрес: {target}")
         logging.info(f"Порты: {ports}")
         logging.info(f"Rate: {self.config.masscan_rate} пакетов/сек")
-        logging.info(f"{'='*60}")
+        logging.info("="*60)
         
         # Для разового сканирования отправляем уведомление о начале
         if not is_scheduled:
@@ -617,10 +669,10 @@ class PortScannerOrchestrator:
             
             await self.notifier.notify_scan_results_single(target_name, target, ports_info)
         
-        logging.info(f"{'='*60}")
+        logging.info("="*60)
         logging.info("Сканирование завершено.")
         logging.info(f"Обнаружено {len(scan_results)} открытых портов на {target_name}")
-        logging.info(f"{'='*60}\n")
+        logging.info("="*60)
         
         return changes
 
@@ -630,9 +682,9 @@ class PortScannerOrchestrator:
         targets = self.config.scan_targets
         total_targets = len(targets)
         
-        logging.info(f"{'='*60}")
+        logging.info("="*60)
         logging.info(f"Начало сканирования всех целей. Всего целей: {total_targets}")
-        logging.info(f"{'='*60}\n")
+        logging.info("="*60)
         
         for idx, target_config in enumerate(targets, 1):
             try:
@@ -643,10 +695,10 @@ class PortScannerOrchestrator:
                 logging.error(f"Ошибка при сканировании цели {target_name}: {e}", exc_info=True)
                 continue
         
-        logging.info(f"{'='*60}")
+        logging.info("="*60)
         logging.info("Сканирование всех целей завершено.")
         logging.info(f"Просканировано целей: {total_targets}")
-        logging.info(f"{'='*60}\n")
+        logging.info("="*60)
             
     async def run_scheduled_scans(self):
         """Запуск сканирования по расписанию."""
@@ -681,9 +733,9 @@ class PortScannerOrchestrator:
         try:
             while True:
                 total_cycles += 1
-                logging.info(f"\n{'#'*60}")
+                logging.info("="*60)
                 logging.info(f"Цикл сканирования #{total_cycles} начат.")
-                logging.info(f"{'#'*60}\n")
+                logging.info("="*60)
                 
                 await self.run_all_scans(is_scheduled=True)
                 
@@ -698,15 +750,16 @@ class PortScannerOrchestrator:
                 logging.info(f"Следующее сканирование запланировано на: {next_scan_datetime}")
                 logging.info(f"Ожидание {interval} часов до следующего сканирования...\n")
                 
-                await asyncio.sleep(interval_seconds)
+                try:
+                    await asyncio.sleep(interval_seconds)
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    raise KeyboardInterrupt()
                 
         except KeyboardInterrupt:
-            logging.info("\n\n>>> Сканирование по расписанию остановлено пользователем.")
-            logging.info(f"Всего циклов сканирования: {total_cycles}")
-            logging.info(f"Всего проведено проверок: {scan_count}")
-            logging.info("Завершение работы.")
+            logging.info(">>> Сканирование остановлено пользователем.")
+            logging.info(f"Статистика: {total_cycles} циклов, {scan_count} проверок")
             
-            # Отправляем уведомление об остановке в чат
+            # Отправляем финальное уведомление в Telegram
             await self.notifier.notify_schedule_stopped(scan_count, total_cycles)
             
             
@@ -714,34 +767,23 @@ class PortScannerOrchestrator:
 async def main():
     """Точка входа для запуска сканирования портов."""
     
-    # Настройка логирования
     setup_logging()
     
     logging.info("="*60)
     logging.info("  PORT SCANNER - Автоматизированное сканирование портов")
     logging.info("  Использует: Masscan + Nmap + Telegram")
-    logging.info("="*60 + "\n")
+    logging.info("="*60)
     
-    try:
-        #Инициализация оркестратора сканирования
-        orchestrator = PortScannerOrchestrator(config_path="app/config.json")
-        
-        # Выбрать запускаемый режим выполнения
-        # Запуск сканирования (автоматически определяет режим из конфига)
-        # Если schedule.enabled = false -> однократное сканирование всех целей
-        # Если schedule.enabled = true -> периодическое сканирование по расписанию
-        await orchestrator.run_scheduled_scans()
-        
-    except KeyboardInterrupt:
-        logging.info(">>> Сканирование остановлено пользователем.")
-    except Exception as e:
-        logging.error(f"Неизвестная ошибка в основном цикле: {e}", exc_info=True)
-        sys.exit(1)
-    finally:
-        logging.info("="*60)
-        logging.info(">>> Программа завершена " + "\n")
+    orchestrator = PortScannerOrchestrator(config_path="app/config.json")
+    await orchestrator.run_scheduled_scans()
 
     
 if __name__ == "__main__":
-    # Запуск основного цикла
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logging.error(f"Критическая ошибка: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        logging.info("="*60)
+        logging.info(">>> Программа завершена\n")
