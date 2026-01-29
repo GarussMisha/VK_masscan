@@ -232,13 +232,32 @@ class TelegramNotifier:
         await self.send_message(message)
     
     async def notify_schedule_started(self, target_name: str, target: str, ports: str, interval_hours: float):
-        """Уведомление о начале планового сканирования."""
+        """Уведомление о начале планового сканирования одной цели."""
         message = f"<b>Начало планового сканирования!</b>\n\n"
         message += f"<b>Цель:</b> {target_name}\n"
         message += f"<b>Адрес:</b> {target}\n"
         message += f"<b>Порты:</b> {ports}\n"
         message += f"<b>Интервал:</b> каждые {interval_hours} часов\n"
         message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        await self.send_message(message)
+    
+    async def notify_schedule_started_multiple(self, targets: List[Dict[str, Any]], interval_hours: float):
+        """Уведомление о начале планового сканирования нескольких целей."""
+        message = f"<b>Начало планового сканирования!</b>\n\n"
+        message += f"<b>Количество целей:</b> {len(targets)}\n"
+        message += f"<b>Интервал:</b> каждые {interval_hours} часов\n\n"
+        message += f"<b>Цели для сканирования:</b>\n"
+        
+        for idx, target in enumerate(targets, 1):
+            target_name = target.get("name", "Unknown")
+            target_addr = target.get("target", "Unknown")
+            target_ports = target.get("ports", "Unknown")
+            message += f"\n{idx}. {target_name}\n"
+            message += f"   Адрес: {target_addr}\n"
+            message += f"   Порты: {target_ports}\n"
+        
+        message += f"\n<b>Время начала:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         
         await self.send_message(message)
     
@@ -719,13 +738,18 @@ class PortScannerOrchestrator:
         # Отправляем уведомление о начале планового сканирования
         targets = self.config.scan_targets
         if targets:
-            first_target = targets[0]
-            await self.notifier.notify_schedule_started(
-                first_target.get("name", "Unknown"),
-                first_target["target"],
-                first_target["ports"],
-                interval
-            )
+            if len(targets) == 1:
+                # Если одна цель, используем старый формат
+                first_target = targets[0]
+                await self.notifier.notify_schedule_started(
+                    first_target.get("name", "Unknown"),
+                    first_target["target"],
+                    first_target["ports"],
+                    interval
+                )
+            else:
+                # Если несколько целей, используем новый метод
+                await self.notifier.notify_schedule_started_multiple(targets, interval)
         
         scan_count = 0
         total_cycles = 0
