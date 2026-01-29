@@ -24,11 +24,14 @@ import nmap
 import subprocess
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+
 
 
 # === 1. Logging Setup === 
 def setup_logging():
     """Настройка логирования для приложения в файл и консоль."""
+    
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -37,6 +40,9 @@ def setup_logging():
             logging.StreamHandler(sys.stdout)
         ]
     )
+    
+    # Подавляем INFO-логи от httpx (используется python-telegram-bot)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # === 2. Config Class === 
@@ -118,15 +124,16 @@ class Config:
 class TelegramNotifier:
     """Отправка уведомлений через Telegram в бота."""
     
-    def __init__(self, bot_token: str, chat_id: str):
-        self.bot_token = bot_token
-        self.chat_id = chat_id
+    def __init__(self):
         self._bot = None
+        load_dotenv()
+        self._bot_token = os.getenv("TELEGRAM_API_TOKEN")
+        self._chat_id = os.getenv("TELEGRAM_CHAT_ID")
         
     async def _get_bot(self):
         """Инициализация бота асинхронно."""
         if not self._bot:
-            self._bot = Bot(token=self.bot_token)
+            self._bot = Bot(token=self._bot_token)
         return self._bot
     
     async def send_message(self, message: str) -> bool:
@@ -134,7 +141,7 @@ class TelegramNotifier:
         try:
             bot = await self._get_bot()
             await bot.send_message(
-                chat_id=self.chat_id,
+                chat_id=self._chat_id,
                 text=message,
                 parse_mode='HTML',
             )
@@ -145,7 +152,7 @@ class TelegramNotifier:
             return False
         
     async def notify_new_ports(self, ip: str, new_ports: list[int], services: dict):
-        """ ОТправка уведомления о новых открытых портах. """
+        """ Отправка уведомления о новых открытых портах. """
         if not new_ports:
             return
         
@@ -155,10 +162,67 @@ class TelegramNotifier:
         message += f"<b>Новые порты ({len(new_ports)}):</b>\n"
         
         for port in new_ports:
-            service = services.get(port, "Неизвестно")
+            service = services.get(str(port), "Неизвестно")
             message += f" - Порт {port}/tcp: {service}\n"
             
         await self.send_message(message)
+    
+    async def notify_changed_services(self, ip: str, changed_ports: dict):
+        """Отправка уведомления об изменении сервисов на портах."""
+        if not changed_ports:
+            return
+        
+        message = f"⚠️ <b>Изменение сервисов на портах!</b>\n\n"
+        message += f"<b>IP:</b> {ip}\n"
+        message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        message += f"<b>Измененные порты ({len(changed_ports)}):</b>\n"
+        
+        for port, (old_service, new_service) in changed_ports.items():
+            message += f" - Порт {port}/tcp:\n"
+            message += f"   Было: {old_service}\n"
+            message += f"   Стало: {new_service}\n"
+            
+        await self.send_message(message)
+    
+    async def notify_scan_results_single(self, target_name: str, target: str, ports_info: dict):
+        """Отправка полной информации о результатах разового сканирования."""
+        if not ports_info:
+            message = f"✅ <b>Сканирование завершено!</b>\n\n"
+            message += f"<b>Цель:</b> {target_name}\n"
+            message += f"<b>Адрес:</b> {target}\n"
+            message += f"<b>Результат:</b> Открытых портов не обнаружено\n"
+            message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            await self.send_message(message)
+            return
+        
+        message = f"📋 <b>Результаты сканирования:</b>\n\n"
+        message += f"<b>Цель:</b> {target_name}\n"
+        message += f"<b>Адрес:</b> {target}\n"
+        message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        message += f"<b>Открытые порты ({len(ports_info)}):</b>\n"
+        
+        for port, service in ports_info.items():
+            message += f" - Порт {port}/tcp: {service}\n"
+            
+        await self.send_message(message)
+    
+    async def notify_schedule_started(self, target_name: str, target: str, ports: str, interval_hours: float):
+        """Уведомление о начале планового сканирования."""
+        message = f"🚀 <b>Начало планового сканирования!</b>\n\n"
+        message += f"<b>Цель:</b> {target_name}\n"
+        message += f"<b>Адрес:</b> {target}\n"
+        message += f"<b>Порты:</b> {ports}\n"
+        message += f"<b>Интервал:</b> каждые {interval_hours} часов\n"
+        message += f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        await self.send_message(message)
+    
+    async def notify_schedule_stopped(self, scan_count: int, total_cycles: int):
+        """Уведомление о завершении планового сканирования."""
+        message = f"⏹️ <b>Плановое сканирование остановлено!</b>\n\n"
+        message += f"<b>Завершено циклов:</b> {total_cycles}\n"
+        message += f"<b>Проведено проверок:</b> {scan_count}\n"
+        message += f"<b>Время остановки:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         
     async def notify_scan_complete(self, target_name: str, total_ports: int):
         """Отправка уведомления об окончании сканирования."""
@@ -286,9 +350,6 @@ class MasscanScanner:
                 capture_output=True,
                 text=True
             )
-            logging.info(f"Возврат кода masscan: {result.returncode}")
-            logging.info(f"Stdout: {result.stdout[:200]}...")
-            logging.info(f"Stderr: {result.stderr[:200]}...")
 
             if result.returncode not in [0, 1]:  # 0 - успешное выполнение, 1 - некоторые хосты недоступны
                 logging.error(f"Ошибка при выполнении masscan: {result.stderr}")
@@ -394,6 +455,24 @@ class ScanHistory:
         current_p = set(current_ports)
         new_ports = current_p - previous_p
         return sorted(list(new_ports))
+    
+    def find_changed_services(self, ip: str, current_services: dict) -> dict:
+        """Определение портов, на которых изменились сервисы."""
+        if ip not in self.data:
+            return {}
+        
+        previous_services = self.data[ip].get("services", {})
+        changed = {}
+        
+        for port, new_service in current_services.items():
+            port_str = str(port)
+            old_service = previous_services.get(port_str, "")
+            
+            # Сравниваем новый сервис со старым
+            if old_service and old_service != new_service:
+                changed[port] = (old_service, new_service)
+        
+        return changed
 
 
 # === 7. Port Scanner Orchestrator Class ===
@@ -407,23 +486,22 @@ class PortScannerOrchestrator:
             rate=self.config.masscan_rate,
             timeout=self.config.masscan_timeout
             )
-        self.notifier = TelegramNotifier(
-            bot_token=self.config.telegram_token,
-            chat_id=self.config.telegram_chat_id
-            )
+        self.notifier = TelegramNotifier()
         self.banner_grabber = BannerGrabber()
 
-    async def process_scan_result(self, results: List[Dict], target_name: str):
+    async def process_scan_result(self, results: List[Dict], target_name: str, is_scheduled: bool = False) -> dict:
         """
         Обработка результатов сканирования:
         - Группировка по IP
         - Получение баннеров для каждого порта
         - Сравнение с историей
-        - Отправка уведомлений о новых портах
+        - Возврат информации об изменениях
+        
+        Возвращает словарь с информацией об изменениях для каждого IP
         """
         if not results:
             logging.info("Нет открытых портов для обработки.")
-            return
+            return {}
         
         # Группировка результатов по IP
         ports_by_ip: Dict[str, List[int]] = {}
@@ -438,6 +516,8 @@ class PortScannerOrchestrator:
             
         logging.info(f"Обнаружено {len(ports_by_ip)} уникальных IP адресов с открытыми портами.")
         
+        changes_detected = {}
+        
         # Обработка каждого IP
         for ip, ports in ports_by_ip.items():
             logging.info(f"{'='*60}")
@@ -449,23 +529,54 @@ class PortScannerOrchestrator:
             for port in ports:
                 logging.info(f"Получение баннера для {ip}:{port}")
                 service_info = self.banner_grabber.identify_open_ports(ip, port)
-                services[port] = service_info
+                services[str(port)] = service_info
                 logging.info(f"-> {ip}:{port}/tcp: {service_info}")
             
             # Определение новых портов
             new_ports = self.history.find_new_ports(ip, ports)
             
-            if new_ports:
-                logging.warning(f"Обноружены НОВЫЕ открытые порты на {ip}: {new_ports}")
-                await self.notifier.notify_new_ports(ip, new_ports, services)
-            else:
-                logging.info(f"Новых открытых портов на {ip} не обнаружено.")
+            # Определение измененных сервисов
+            changed_services = self.history.find_changed_services(ip, services)
+            
+            ip_changes = {
+                'has_new_ports': bool(new_ports),
+                'new_ports': new_ports,
+                'has_changed_services': bool(changed_services),
+                'changed_services': changed_services,
+                'services': services,
+                'all_ports': ports
+            }
+            
+            if is_scheduled:
+                # При плановом сканировании отправляем только если есть изменения
+                if new_ports:
+                    logging.warning(f"Обнаружены НОВЫЕ открытые порты на {ip}: {new_ports}")
+                    await self.notifier.notify_new_ports(ip, new_ports, services)
                 
+                if changed_services:
+                    logging.warning(f"На {ip} изменились сервисы: {changed_services}")
+                    await self.notifier.notify_changed_services(ip, changed_services)
+                
+                if not new_ports and not changed_services:
+                    logging.info(f"На {ip} нет изменений (новых портов и измененных сервисов).")
+            else:
+                # При разовом сканировании собираем информацию без отправки
+                if new_ports:
+                    logging.warning(f"Обнаружены НОВЫЕ открытые порты на {ip}: {new_ports}")
+                
+                if changed_services:
+                    logging.warning(f"На {ip} изменились сервисы: {changed_services}")
+                
+                logging.info(f"История сканирования для {ip} обновлена (режим разового сканирования).")
+            
             # Обновление истории сканирования
             self.history.update_ports(ip, ports, services)
-            logging.info(f"История сканирования для {ip} обновлена.")
             
-    async def run_scan(self, target_config: Dict[str, str]):
+            changes_detected[ip] = ip_changes
+        
+        return changes_detected
+            
+    async def run_scan(self, target_config: Dict[str, str], is_scheduled: bool = False):
         """Запуск полного цикла сканирования."""
         
         target_name = target_config.get("name", "Unknown")
@@ -480,28 +591,40 @@ class PortScannerOrchestrator:
         logging.info(f"Rate: {self.config.masscan_rate} пакетов/сек")
         logging.info(f"{'='*60}")
         
-        await self.notifier.notify_scan_start(target_name, target, ports)
+        # Для разового сканирования отправляем уведомление о начале
+        if not is_scheduled:
+            await self.notifier.notify_scan_start(target_name, target, ports)
         
         # Выполнение сканирования masscan
         scan_results = self.masscan_scanner.scan(target, ports)
         
         if not scan_results:
             logging.info("Сканирование завершено. Открытых портов не обнаружено.")
-            await self.notifier.notify_scan_complete(target_name, 0)
-            return
+            if not is_scheduled:
+                await self.notifier.notify_scan_results_single(target_name, target, {})
+            return {}
         
-        # Обработка результатов сканирования
-        await self.process_scan_result(scan_results, target_name)
+        # Обработка результатов сканирования (возвращает информацию об изменениях)
+        changes = await self.process_scan_result(scan_results, target_name, is_scheduled=is_scheduled)
         
-        # Уведомление об окончании сканирования
-        await self.notifier.notify_scan_complete(target_name, len(scan_results))
+        # Для разового сканирования отправляем полную информацию
+        if not is_scheduled and scan_results:
+            # Собираем все порты и сервисы для отправки
+            ports_info = {}
+            for ip, ip_info in changes.items():
+                for port_str, service in ip_info['services'].items():
+                    ports_info[f"{ip}:{port_str}"] = service
+            
+            await self.notifier.notify_scan_results_single(target_name, target, ports_info)
         
         logging.info(f"{'='*60}")
         logging.info("Сканирование завершено.")
         logging.info(f"Обнаружено {len(scan_results)} открытых портов на {target_name}")
         logging.info(f"{'='*60}\n")
+        
+        return changes
 
-    async def run_all_scans(self):
+    async def run_all_scans(self, is_scheduled: bool = False):
         """Запуск сканирования для всех целей из конфигурации."""
         
         targets = self.config.scan_targets
@@ -514,7 +637,7 @@ class PortScannerOrchestrator:
         for idx, target_config in enumerate(targets, 1):
             try:
                 logging.info(f">>> Сканирование цели {idx} из {total_targets} <<<")
-                await self.run_scan(target_config)
+                await self.run_scan(target_config, is_scheduled=is_scheduled)
             except Exception as e:
                 target_name = target_config.get("name", "Unknown")
                 logging.error(f"Ошибка при сканировании цели {target_name}: {e}", exc_info=True)
@@ -531,7 +654,7 @@ class PortScannerOrchestrator:
         if not self.config.schedule_enabled:
             logging.info("Планировщик сканирования отключен в конфиге.")
             logging.info("Выполняется одноразовое сканирование всех целей.")
-            await self.run_all_scans()
+            await self.run_all_scans(is_scheduled=False)
             return
         
         interval = self.config.schedule_interval_hours
@@ -541,16 +664,34 @@ class PortScannerOrchestrator:
         logging.info(f"Сканирование будет выполняться каждые {interval} часов.")
         logging.info("Для остановки сканирования нажмите Ctrl+C.")
         
+        # Отправляем уведомление о начале планового сканирования
+        targets = self.config.scan_targets
+        if targets:
+            first_target = targets[0]
+            await self.notifier.notify_schedule_started(
+                first_target.get("name", "Unknown"),
+                first_target["target"],
+                first_target["ports"],
+                interval
+            )
+        
         scan_count = 0
+        total_cycles = 0
         
         try:
             while True:
-                scan_count += 1
+                total_cycles += 1
                 logging.info(f"\n{'#'*60}")
-                logging.info(f"Цикл сканирования #{scan_count} начат.")
+                logging.info(f"Цикл сканирования #{total_cycles} начат.")
                 logging.info(f"{'#'*60}\n")
                 
-                await self.run_all_scans()
+                await self.run_all_scans(is_scheduled=True)
+                
+                # Подсчитываем все открытые порты для статистики
+                for target_config in targets:
+                    target = target_config["target"]
+                    previous_ports = self.history.get_previous_ports(target)
+                    scan_count += len(previous_ports)
                 
                 next_scan_time = datetime.now().timestamp() + interval_seconds
                 next_scan_datetime = datetime.fromtimestamp(next_scan_time).strftime('%Y-%m-%d %H:%M:%S')
@@ -560,9 +701,13 @@ class PortScannerOrchestrator:
                 await asyncio.sleep(interval_seconds)
                 
         except KeyboardInterrupt:
-            logging.info("\n\n Сканирование по расписанию остановлено пользователем.")
-            logging.info("Выполнено циклов сканирования: {scan_count}")
+            logging.info("\n\n>>> Сканирование по расписанию остановлено пользователем.")
+            logging.info(f"Всего циклов сканирования: {total_cycles}")
+            logging.info(f"Всего проведено проверок: {scan_count}")
             logging.info("Завершение работы.")
+            
+            # Отправляем уведомление об остановке в чат
+            await self.notifier.notify_schedule_stopped(scan_count, total_cycles)
             
             
 # === 8. Main Entry Point ===
