@@ -1,0 +1,26 @@
+{
+  "scan_target": [
+    {
+    "name": "Google DNS",
+    "target": "1.1.1.1",
+    "ports": "80,443,22,21,3306,5432,8080,9000-9100"
+    },
+    {
+    "name": "Cloudflare DNS",
+    "target": "8.8.8.8",
+    "ports": "80,443,22,21,3306,5432,8080,9000-9100"
+    }
+  ],
+  "masscan_config": {
+    "rate": 100000,
+    "timeout": 15
+  },
+  "telegram": {
+    "bot_token": ".env file",
+    "chat_id": ".env file"
+  },
+  "schedule": {
+    "enabled": true,
+    "interval_hours": 0.01
+  }
+}

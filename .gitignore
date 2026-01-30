@@ -4,8 +4,5 @@ docs/
 *output.json*
 *.sh
 **README.md**
-*config.json*
 **masscan**
 **scan**
-
-**.md**
