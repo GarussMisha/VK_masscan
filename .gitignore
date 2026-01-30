@@ -1,8 +1,4 @@
 *.env
 venv/
 docs/
-*output.json*
-*.sh
-**README.md**
-**masscan**
-**scan**
+**__pycache__**
